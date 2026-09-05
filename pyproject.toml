@@ -1,0 +1,20 @@
+[project]
+name = "wrc-pipeline"
+version = "0.1.0"
+description = "Scrapy ingestion and transformation pipeline for Workplace Relations decisions"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic-settings>=2.4",
+    "pymongo>=4.8",
+    "boto3>=1.35",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
