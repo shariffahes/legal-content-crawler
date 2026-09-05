@@ -5,6 +5,8 @@ from functools import lru_cache
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from wrc.partitions import PartitionSize
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -31,6 +33,8 @@ class Settings(BaseSettings):
     source_date_format: str
     user_agent: str
     request_delay: float
+
+    partition_size: PartitionSize
 
 
 @lru_cache
