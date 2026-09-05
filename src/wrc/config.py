@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     s3_landing_bucket: str
     s3_transformed_bucket: str
 
+    source_base_url: str
+    source_search_path: str
+    source_page_size: int
+    source_date_format: str
+    user_agent: str
+    request_delay: float
+
 
 @lru_cache
 def get_settings() -> Settings:
