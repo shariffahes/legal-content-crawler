@@ -1,0 +1,70 @@
+# Everything site-specific about this source.
+name: wrc
+display_name: Workplace Relations decisions and determinations
+jurisdiction: IE
+language: en
+base_url: https://www.workplacerelations.ie
+
+listing:
+  path: /en/search/
+  page_size: 10
+  # How to discover the pages of a result set:
+  #   declared_total - the site states a match count; pages are computed and fetched concurrently,
+  #                    and the pager link is used only to verify.
+  #   follow_next    - no count is published; follow the pager serially.
+  pagination: declared_total
+  date_format: "%-d/%-m/%Y"
+  params:
+    date_from: from
+    date_to: to
+    page: pageNumber
+    static:
+      decisions: 1
+      q: ""
+
+# The categorical filter used to partition scraping alongside dates. maps_to names the
+# metadata field it populates, so a source faceting on something else declares that
+# instead of forcing its vocabulary onto the schema.
+facet:
+  param: body
+  maps_to: issuing_authority
+  # active_from is structural: the authority did not exist before this date, so an
+  # earlier partition cannot hold its records and is skipped without a request.
+  # There is deliberately no active_to. An authority publishing nothing recently is not
+  # evidence that it never will, and skipping a trailing range is silent data loss.
+  values:
+    - id: "2"
+      name: Employment Appeals Tribunal
+      active_from: 2007-01-01
+    - id: "1"
+      name: Equality Tribunal
+      active_from: 1996-01-01
+    - id: "3"
+      name: Labour Court
+      active_from: 1995-01-01
+    - id: "15376"
+      name: Workplace Relations Commission
+      active_from: 2016-01-01
+
+listing_contract:
+  selectors:
+    result_count: div.searchhead
+    record: li.each-item
+    identifier: h2.title a
+    published_date: span.date
+    doc_path: p.fullpath
+    description: p.description
+    ref_no: span.refNO
+    view_page: div.bottom-ref a.btn-primary
+    next_page: ul.pager a.next
+  patterns:
+    total: 'of\s+(\d+)\s+results'
+    no_results: 'no\s+search\s+results'
+  published_date_format: "%d/%m/%Y"
+  # Where the document path is published, most authoritative first. The footer link is
+  # the site's own navigation target. p.fullpath is least trusted: its text node is
+  # empty and the value lives only in a title attribute, declared on that entry alone.
+  doc_path_sources:
+    - view_page
+    - identifier
+    - {selector: doc_path, attributes: [title]}

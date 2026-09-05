@@ -1,0 +1,35 @@
+# A source shaped differently from WRC, so the second pagination strategy is executed
+# rather than merely loaded. Publishes no result count and no reference number.
+name: fixture-follow-next
+display_name: Fixture source that paginates by following the pager
+jurisdiction: XX
+language: en
+base_url: https://fixture.example
+
+listing:
+  path: /decisions
+  page_size: 3
+  pagination: follow_next
+  date_format: "%Y-%m-%d"
+  params:
+    date_from: after
+    date_to: before
+    page: p
+    static: {}
+
+facet:
+  param: court
+  maps_to: issuing_authority
+  values:
+    - id: "hc"
+      name: High Court
+
+listing_contract:
+  selectors:
+    record: article.decision
+    identifier: h3 a
+    published_date: time
+    description: p.summary
+    next_page: nav a[rel=next]
+  published_date_format: "%Y-%m-%d"
+  doc_path_sources: [identifier]
