@@ -18,6 +18,9 @@ class PartitionStats:
     duplicates: int = 0
     downloaded: int = 0
     download_failed: int = 0
+    stored: int = 0
+    unchanged: int = 0
+    store_failed: int = 0
     failures: list[dict] = field(default_factory=list)
     identifiers: set[str] = field(default_factory=set)
     urls_fetched: set[str] = field(default_factory=set)
@@ -51,8 +54,15 @@ class PartitionStats:
 
     @property
     def complete(self) -> bool:
-        """Every listed record was also fetched. Storage adds its own condition later."""
-        return self.listing_complete and self.download_failed == 0 and self.downloaded == self.scraped
+        """Every listed record was fetched, and every fetched document is either newly
+        stored or confirmed already present with the same content."""
+        return (
+            self.listing_complete
+            and self.download_failed == 0
+            and self.downloaded == self.scraped
+            and self.store_failed == 0
+            and self.stored + self.unchanged == self.downloaded
+        )
 
     @property
     def missing(self) -> int | None:
@@ -74,6 +84,9 @@ class PartitionStats:
             "records_unaccounted": self.missing,
             "documents_downloaded": self.downloaded,
             "downloads_failed": self.download_failed,
+            "documents_stored": self.stored,
+            "documents_unchanged": self.unchanged,
+            "stores_failed": self.store_failed,
             "pages_expected": self.pages_expected,
             "pages_parsed": self.pages_parsed,
             "failures": len(self.failures),
@@ -107,6 +120,9 @@ class RunStats:
         degraded = sum(p.degraded for p in self.partitions)
         downloaded = sum(p.downloaded for p in self.partitions)
         download_failed = sum(p.download_failed for p in self.partitions)
+        stored = sum(p.stored for p in self.partitions)
+        unchanged = sum(p.unchanged for p in self.partitions)
+        store_failed = sum(p.store_failed for p in self.partitions)
         incomplete = [p.as_dict() for p in self.partitions if not p.complete]
         return {
             "partitions_processed": len(self.partitions),
@@ -117,6 +133,9 @@ class RunStats:
             "records_duplicate": duplicates,
             "documents_downloaded": downloaded,
             "downloads_failed": download_failed,
+            "documents_stored": stored,
+            "documents_unchanged": unchanged,
+            "stores_failed": store_failed,
             "records_unaccounted": found - scraped - skipped,
             "found_is_declared": all(p.found_is_declared for p in self.partitions),
             "skip_reasons": dict(self.reasons),

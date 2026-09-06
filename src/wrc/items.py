@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime, timezone
 
 
@@ -38,6 +38,7 @@ class DocumentRecord:
 
     # Set once the document has been stored.
     file_path: str | None = None
+    stored_at: datetime | None = None
 
     # The bytes themselves, carried to the storage pipeline and never persisted here.
     content: bytes | None = field(default=None, repr=False)
@@ -45,3 +46,14 @@ class DocumentRecord:
     @classmethod
     def persisted_fields(cls) -> list[str]:
         return [f.name for f in fields(cls) if f.name != "content"]
+
+    def to_document(self) -> dict:
+        """The record as a Mongo document: no bytes, and dates widened to datetimes,
+        which is what BSON can encode."""
+        document = asdict(self)
+        document.pop("content")
+        for name in ("published_date", "partition_date"):
+            value = document[name]
+            if isinstance(value, date):
+                document[name] = datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+        return document

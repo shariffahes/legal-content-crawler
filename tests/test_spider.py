@@ -220,7 +220,8 @@ def test_parse_document_fingerprints_and_names_the_record(spider_factory):
     assert out.fetched_at is not None
     assert out.quality_flags == []
     stats = partition_stats(spider)
-    assert (stats.scraped, stats.downloaded) == (1, 1) and stats.complete
+    assert (stats.scraped, stats.downloaded) == (1, 1)
+    assert not stats.complete, "nothing has been stored yet; completeness needs the pipelines"
 
 
 def test_same_content_different_timing_comment_yields_same_hash_and_key(spider_factory):
