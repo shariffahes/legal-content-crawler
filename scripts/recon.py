@@ -329,6 +329,55 @@ class Recon:
         )
         self.record("Empty-result states", body, ok=ok)
 
+    def check_document_hash_stability(self) -> None:
+        """Are the bytes of a document the same on every fetch? Decides what file_hash may cover.
+        """
+        import hashlib
+
+        listing = self.get(**{"from": "1/1/2010", "to": "31/12/2010", "body": "3", "pageNumber": 7})
+        docs = [r.doc_path for r in self.records(listing) if r.doc_path][:6]
+        comment = re.compile(rb"<!--.*?-->", re.S)
+        marker = re.compile(rb"<!-- (Elapsed time: [\d.]+|cached[^>]*) -->")
+
+        def region_text(html: bytes) -> bytes:
+            node = Selector(text=html.decode("utf-8", "replace")).css("div.content")
+            return " ".join(" ".join(node.css("::text").getall()).split()).encode()
+
+        rows = []
+        for path in docs:
+            url = SPEC.absolute_url(path)
+            pair = []
+            for _ in range(2):
+                time.sleep(self.settings.request_delay)
+                self.requests_made += 1
+                body = self.session.get(url, timeout=30).content
+                m = marker.search(body)
+                pair.append((body, (m.group(1).decode() if m else "no marker")[:28]))
+            (a, ma), (b, mb) = pair
+            rows.append((path.rsplit("/", 1)[-1], ma, mb,
+                         hashlib.sha256(a).digest() == hashlib.sha256(b).digest(),
+                         comment.sub(b"", a) == comment.sub(b"", b),
+                         region_text(a) == region_text(b)))
+
+        raw_stable = sum(r[3] for r in rows); norm_stable = sum(r[4] for r in rows); region_stable = sum(r[5] for r in rows)
+        body = "\n".join([
+            "Each document fetched twice. The marker is the server's own comment: a real elapsed",
+            "time means a fresh render, `cached…` means the output cache answered.",
+            "",
+            "| document | fetch 1 | fetch 2 | raw bytes equal | minus comments equal | content text equal |",
+            "| --- | --- | --- | --- | --- | --- |",
+            *(f"| `{n}` | {ma} | {mb} | {ra} | {na} | {ca} |" for n, ma, mb, ra, na, ca in rows),
+            "",
+            f"Raw bytes stable: **{raw_stable}/{len(rows)}**. Minus comments: **{norm_stable}/{len(rows)}**. "
+            f"Content text: **{region_stable}/{len(rows)}**.",
+            "",
+            "A raw-bytes hash therefore cannot serve as the change fingerprint: whenever a fetch is a",
+            "fresh render its timing comment differs, and a crawl of any size straddles cache expiries.",
+            "Two identical fetches prove only that the cache was warm.",
+        ])
+        self.record("Document bytes vary between fetches", body,
+                    ok=norm_stable == len(rows) and region_stable == len(rows) and raw_stable < len(rows))
+
     def check_robots(self) -> None:
         url = f"{SPEC.base_url}/robots.txt"
         self.requests_made += 1
@@ -513,6 +562,7 @@ def main() -> int:
         recon.check_body_disjointness,
         recon.check_document_formats,
         recon.check_empty_states,
+        recon.check_document_hash_stability,
         recon.check_robots,
     ]
     for check in checks:

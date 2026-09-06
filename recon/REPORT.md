@@ -1,10 +1,10 @@
 # Reconnaissance report
 
-Generated 2026-09-05 against `https://www.workplacerelations.ie` (Workplace Relations decisions and determinations).
+Generated 2026-09-06 against `https://www.workplacerelations.ie` (Workplace Relations decisions and determinations).
 
-Requests issued: **43**, issued sequentially over a single reused HTTP session, 0.6s apart. No concurrency.
+Requests issued: **56**, issued sequentially over a single reused HTTP session, 0.6s apart. No concurrency.
 
-Result: **0 failed** of 7 checks.
+Result: **0 failed** of 8 checks.
 
 Regenerate with `python scripts/recon.py --full`.
 
@@ -45,12 +45,12 @@ Records with no usable path at all: **0**
 
 Sample record:
 ```
-identifier_raw  ' ADJ-00022400'
-identifier      'ADJ-00022400'
-extras          {'ref_no': 'ADJ-00022400'}
-description     'A Receptionist Medical Secretary / A Medical Practice'
+identifier_raw  'LCR22333'
+identifier      'LCR22333'
+extras          {'ref_no': 'LCR22333'}
+description     "BON SECOURS MOUNT DESERT (REPRESENTED BY IRISH BUSINESS AND EMPLOYERS' CONFEDERATION) - AND - APPROX 45 HEALTH CARE ASSISTANTS (REPRESENTED BY SERVICES INDUSTRIAL PROFESSIONAL TECHNICAL UNION)"
 published_date  datetime.date(2020, 12, 31)
-doc_path        '/en/cases/2021/january/adj-00022400.html'
+doc_path        '/en/cases/2020/december/lcr22333.html'
 path_conflict   False
 ```
 
@@ -171,6 +171,28 @@ check honest:
 Collapsing the second and third states into a silent zero is the failure mode that
 would let a run report success having scraped nothing.
 
+## Document bytes vary between fetches
+
+**PASS**
+
+Each document fetched twice. The marker is the server's own comment: a real elapsed
+time means a fresh render, `cached…` means the output cache answered.
+
+| document | fetch 1 | fetch 2 | raw bytes equal | minus comments equal | content text equal |
+| --- | --- | --- | --- | --- | --- |
+| `dwt10180.html` | Elapsed time: 0.2186498 | cached or not being index.as | False | True | True |
+| `int1021.html` | Elapsed time: 0.0624764 | cached or not being index.as | False | True | True |
+| `lcr19953.html` | Elapsed time: 0.0781065 | cached or not being index.as | False | True | True |
+| `ad10100.html` | Elapsed time: 0.0780962 | cached or not being index.as | False | True | True |
+| `ad10101.html` | Elapsed time: 0.0577295 | cached or not being index.as | False | True | True |
+| `ad10102.html` | Elapsed time: 0.0781319 | cached or not being index.as | False | True | True |
+
+Raw bytes stable: **0/6**. Minus comments: **6/6**. Content text: **6/6**.
+
+A raw-bytes hash therefore cannot serve as the change fingerprint: whenever a fetch is a
+fresh render its timing comment differs, and a crawl of any size straddles cache expiries.
+Two identical fetches prove only that the cache was warm.
+
 ## robots.txt
 
 **PASS**
@@ -183,15 +205,15 @@ would let a run report success having scraped nothing.
 
 `/en/search/` (the listing endpoint) is **not** disallowed.
 
-Case-sensitive match of `/en/cases/2021/january/adj-00022400.html` against those rules: **False**.
+Case-sensitive match of `/en/cases/2020/december/lcr22333.html` against those rules: **False**.
 
 RFC 9309 specifies case-sensitive path matching, and document URLs are lowercase,
 so the rule does not literally apply.
 
-Probing the capitalised form `/en/Cases/2021/january/adj-00022400.html`:
+Probing the capitalised form `/en/Cases/2020/december/lcr22333.html`:
 
 - status `301`
-- location `/en/cases/2021/january/adj-00022400.html`
+- location `/en/cases/2020/december/lcr22333.html`
 - canonicalises to the lowercase path: **True**
 
 The disallowed path therefore genuinely exists and redirects to the path the
