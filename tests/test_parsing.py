@@ -141,6 +141,8 @@ def test_rows_with_missing_fields_are_returned_with_a_reason():
     (parsed,) = extract_rows(page(broken), CONTRACT)
     assert parsed.identifier == ""
     assert parsed.doc_path is None
+    assert parsed.fatal == ["identifier", "doc_path"]
+    assert parsed.degraded == ["published_date"]
     assert set(parsed.missing) == {"identifier", "doc_path", "published_date"}
 
 
@@ -148,7 +150,8 @@ def test_unparseable_date_does_not_stop_the_row():
     (parsed,) = extract_rows(page(row(date_text="not a date")), CONTRACT)
     assert parsed.identifier == "ADJ-00022400"
     assert parsed.published_date is None
-    assert parsed.missing == ["published_date"]
+    assert parsed.fatal == []
+    assert parsed.degraded == ["published_date"]
 
 
 def test_empty_listing_yields_no_rows():

@@ -14,7 +14,7 @@ from wrc.partitions import Partition
 # Metadata fields a facet is allowed to populate. Validated at load so a typo or an
 # unsupported vocabulary fails immediately, rather than silently leaving the field empty
 # on every record. Supporting a new target is a deliberate pair of edits: add the field
-# to DecisionRecord, add its name here.
+# to DocumentRecord, add its name here.
 FACET_TARGETS = frozenset({"issuing_authority"})
 
 

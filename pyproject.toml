@@ -1,7 +1,7 @@
 [project]
 name = "wrc-pipeline"
 version = "0.1.0"
-description = "Scrapy ingestion and transformation pipeline for Workplace Relations decisions"
+description = "Scrapy ingestion and transformation pipeline for legal document sources"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic-settings>=2.4",

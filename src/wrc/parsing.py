@@ -132,12 +132,23 @@ class ListingRow:
     extras: dict[str, str] = field(default_factory=dict)
 
     @property
+    def fatal(self) -> list[str]:
+        """Absent fields without which no record can exist: nothing to key on, or nothing to fetch."""
+        return [name for name in ("identifier", "doc_path") if not getattr(self, name)]
+
+    @property
+    def degraded(self) -> list[str]:
+        """Absent fields the record survives without.
+
+        A document with no parseable date is still fetchable and storable, and its partition
+        comes from the site's date filter rather than from this field, so lineage is intact.
+        It is emitted with a quality flag rather than dropped.
+        """
+        return ["published_date"] if self.published_date is None else []
+
+    @property
     def missing(self) -> list[str]:
-        """Fields the markup did not supply. Requirement 10 needs a reason per dropped record."""
-        absent = [name for name in ("identifier", "doc_path") if not getattr(self, name)]
-        if self.published_date is None:
-            absent.append("published_date")
-        return absent
+        return self.fatal + self.degraded
 
 
 def normalise(text: str | None) -> str:

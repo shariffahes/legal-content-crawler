@@ -27,14 +27,22 @@ class Settings(BaseSettings):
     s3_landing_bucket: str
     s3_transformed_bucket: str
 
-    source_base_url: str
-    source_search_path: str
-    source_page_size: int
-    source_date_format: str
     user_agent: str
     request_delay: float
 
     partition_size: PartitionSize
+    source_spec_path: str
+
+    concurrent_requests: int
+    concurrent_requests_per_domain: int
+    download_timeout: int
+    retry_times: int
+    autothrottle_enabled: bool
+    autothrottle_target_concurrency: float
+    autothrottle_max_delay: float
+    robotstxt_obey: bool
+    log_level: str
+    max_recovery_pages: int
 
 
 @lru_cache

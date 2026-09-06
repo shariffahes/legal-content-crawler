@@ -21,43 +21,23 @@ from datetime import date
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup
+from parsel import Selector
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from wrc.config import get_settings  # noqa: E402
+from wrc.parsing import extract_rows, extract_total  # noqa: E402
+from wrc.source import SourceSpec  # noqa: E402
 
-BODIES = {
-    "2": "Employment Appeals Tribunal",
-    "1": "Equality Tribunal",
-    "3": "Labour Court",
-    "15376": "Workplace Relations Commission",
-}
-
-TOTAL_RE = re.compile(r"of\s+(\d+)\s+results")
-NO_RESULTS_RE = re.compile(r"no\s+search\s+results", re.I)
+SPEC = SourceSpec.load(get_settings().source_spec_path)
+CONTRACT = SPEC.contract
+SELECTORS = CONTRACT.selectors
+DOC_PATH_SOURCES = CONTRACT.doc_path_sources
+BODIES = {value.id: value.name for value in SPEC.facet.values}
+FACET_PARAM = SPEC.facet.param
 
 
-def resolve_doc_path(record: dict) -> tuple[str | None, bool]:
-    """Pick the document path from three redundant sources, most authoritative first."""
-    present = [record.get(k) for k in DOC_PATH_SOURCES if record.get(k)]
-    if not present:
-        return None, False
-    return present[0], len(set(present)) > 1
-
-SELECTOR_CONTRACT = {
-    "total_count": "div.searchhead",
-    "record": "li.each-item",
-    "identifier": "h2.title a",
-    "published_date": "span.date",
-    "doc_path": "p.fullpath",
-    "description": "p.description",
-    "ref_no": "span.refNO",
-    "view_page": "div.bottom-ref a.btn-primary",
-}
-
-# Ordered most to least authoritative. The footer "View Page" link is what a user
-# actually follows, so it wins when the three disagree.
-DOC_PATH_SOURCES = ("view_page", "href", "doc_path")
 
 
 @dataclass
@@ -71,14 +51,25 @@ class Recon:
 
     def __post_init__(self) -> None:
         self.session.headers["User-Agent"] = self.settings.user_agent
+        # The source intermittently stalls; without this a transient timeout would be
+        # reported as a failed assumption rather than a failed request.
+        retry = Retry(
+            total=3,
+            backoff_factor=1.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=("GET", "HEAD"),
+        )
+        self.session.mount("https://", HTTPAdapter(max_retries=retry))
 
     @property
     def search_url(self) -> str:
-        return f"{self.settings.source_base_url}{self.settings.source_search_path}"
+        return SPEC.search_url
 
     def get(self, **params) -> str:
-        params.setdefault("decisions", 1)
-        params.setdefault("q", "")
+        if "body" in params:
+            params[FACET_PARAM] = params.pop("body")
+        for key, value in SPEC.listing.static_params.items():
+            params.setdefault(key, value)
         time.sleep(self.settings.request_delay)
         self.requests_made += 1
         resp = self.session.get(self.search_url, params=params, timeout=30)
@@ -86,43 +77,10 @@ class Recon:
         return resp.text
 
     def total(self, html: str) -> int | None:
-        """Declared result count, 0 for a legitimately empty range, None if unparseable.
+        return extract_total(html, CONTRACT)
 
-        The distinction matters: None must be loud, because a silently-zero completeness
-        check would report a successful run that scraped nothing.
-        """
-        node = BeautifulSoup(html, "lxml").select_one(SELECTOR_CONTRACT["total_count"])
-        if node is None:
-            return None
-        text = " ".join(node.get_text().split())
-        match = TOTAL_RE.search(text)
-        if match:
-            return int(match.group(1))
-        return 0 if NO_RESULTS_RE.search(text) else None
-
-    def records(self, html: str) -> list[dict]:
-        soup = BeautifulSoup(html, "lxml")
-        out = []
-        for li in soup.select(SELECTOR_CONTRACT["record"]):
-            anchor = li.select_one(SELECTOR_CONTRACT["identifier"])
-            path = li.select_one(SELECTOR_CONTRACT["doc_path"])
-            ref = li.select_one(SELECTOR_CONTRACT["ref_no"])
-            desc = li.select_one(SELECTOR_CONTRACT["description"])
-            pub = li.select_one(SELECTOR_CONTRACT["published_date"])
-            view = li.select_one(SELECTOR_CONTRACT["view_page"])
-            rec = {
-                "identifier_raw": anchor.get_text() if anchor else None,
-                "identifier": anchor.get_text(strip=True) if anchor else None,
-                "href": anchor.get("href") if anchor else None,
-                "doc_path": path.get("title") if path else None,
-                "view_page": view.get("href") if view else None,
-                "ref_no": ref.get_text(strip=True) if ref else None,
-                "description": desc.get_text(strip=True) if desc else None,
-                "published_date": pub.get_text(strip=True) if pub else None,
-            }
-            rec["resolved_path"], rec["path_conflict"] = resolve_doc_path(rec)
-            out.append(rec)
-        return out
+    def records(self, html: str):
+        return extract_rows(html, CONTRACT)
 
     def record(self, title: str, body: str, ok: bool = True) -> None:
         mark = "PASS" if ok else "FAIL"
@@ -136,28 +94,36 @@ class Recon:
         html = self.get(
             **{"from": "1/1/2020", "to": "31/12/2020", "body": ",".join(BODIES), "pageNumber": 1}
         )
-        missing = [
-            name for name, sel in SELECTOR_CONTRACT.items()
-            if BeautifulSoup(html, "lxml").select_one(sel) is None
-        ]
+        page = Selector(text=html)
+        missing = [name for name, sel in SELECTORS.items() if not page.css(sel)]
         rows = self.records(html)
-        empty = sorted({k for r in rows for k, v in r.items() if not v and not isinstance(v, bool)})
-        dirty = [r for r in rows if r["identifier_raw"] != r["identifier"]]
-        sample = rows[0] if rows else {}
-        if rows and rows[0].get("resolved_path"):
-            self.sample_doc_path = rows[0]["resolved_path"]
+        empty = sorted({name for r in rows for name in r.missing})
+        dirty = [r for r in rows if r.identifier_raw != r.identifier]
+        sample = rows[0] if rows else None
+        if rows and rows[0].doc_path:
+            self.sample_doc_path = rows[0].doc_path
 
-        id_consistent = all(r["identifier"] == r["ref_no"] for r in rows)
-        conflicts = [r for r in rows if r["path_conflict"]]
-        unresolved = [r for r in rows if not r["resolved_path"]]
+        id_consistent = all(r.identifier == r.extras.get("ref_no") for r in rows)
+        conflicts = [r for r in rows if r.path_conflict]
+        unresolved = [r for r in rows if not r.doc_path]
         agreement = {
-            src: sum(1 for r in rows if r.get(src) == r["resolved_path"]) for src in DOC_PATH_SOURCES
+            src: sum(1 for r in rows if r.path_candidates.get(src) == r.doc_path)
+            for src in DOC_PATH_SOURCES
         }
         consistent = id_consistent and not conflicts and not unresolved
+        sample_fields = (
+            "identifier_raw", "identifier", "extras", "description",
+            "published_date", "doc_path", "path_conflict",
+        )
+        sample_lines = (
+            [f"{name:<16}{getattr(sample, name)!r}" for name in sample_fields]
+            if sample
+            else ["(no records returned)"]
+        )
         lines = [
             "| field | selector | present |",
             "| --- | --- | --- |",
-            *(f"| {n} | `{s}` | {'no' if n in missing else 'yes'} |" for n, s in SELECTOR_CONTRACT.items()),
+            *(f"| {n} | `{s}` | {'no' if n in missing else 'yes'} |" for n, s in SELECTORS.items()),
             "",
             f"Fields empty across {len(rows)} records: {empty or 'none'}",
             f"`identifier` matches `ref_no` for every record: **{id_consistent}**",
@@ -177,12 +143,12 @@ class Recon:
             "",
             "Sample record:",
             "```",
-            *(f"{k:<16}{v!r}" for k, v in sample.items()),
+            *sample_lines,
             "```",
             "",
             f"Identifiers carrying surrounding whitespace in the raw markup: "
             f"**{len(dirty)}/{len(rows)}** "
-            f"(e.g. {rows[0]['identifier_raw']!r} -> {rows[0]['identifier']!r}).",
+            f"(e.g. {(dirty or rows)[0].identifier_raw!r} -> {(dirty or rows)[0].identifier!r}).",
             "",
             "Identifiers elsewhere in the corpus also contain internal spaces (`IR - SC - 00001595`),",
             "and descriptions contain doubled spaces. Normalisation is required before an identifier",
@@ -205,18 +171,18 @@ class Recon:
                 "| --- | --- |",
                 *(f"| `{k}` | {v} |" for k, v in counts.items()),
                 "",
-                f"Configured `SOURCE_PAGE_SIZE` = {self.settings.source_page_size}.",
+                f"Configured page size = {SPEC.listing.page_size}.",
                 "",
                 "Consequence: listing requests scale strictly as `ceil(records / 10)`. There is no",
                 "lever to reduce request count other than not requesting empty ranges at all.",
             ]
         )
-        self.record("Page size is fixed", body, ok=fixed and counts["(none)"] == self.settings.source_page_size)
+        self.record("Page size is fixed", body, ok=fixed and counts["(none)"] == SPEC.listing.page_size)
 
     def check_statelessness(self) -> None:
         args = {"from": "1/1/2020", "to": "31/12/2020", "body": "15376"}
-        first = {r["identifier"] for r in self.records(self.get(**args, pageNumber=1))}
-        deep = {r["identifier"] for r in self.records(self.get(**args, pageNumber=5))}
+        first = {r.identifier for r in self.records(self.get(**args, pageNumber=1))}
+        deep = {r.identifier for r in self.records(self.get(**args, pageNumber=5))}
         past_end = self.records(self.get(**args, pageNumber=9999))
 
         ok = bool(first) and bool(deep) and not (first & deep) and not past_end
@@ -275,7 +241,7 @@ class Recon:
                     for rec in self.records(
                         self.get(**{"from": start, "to": end, "body": body, "pageNumber": page})
                     ):
-                        href = rec["href"] or ""
+                        href = rec.doc_path or ""
                         counter[href.rsplit(".", 1)[-1].lower() if "." in href else "(none)"] += 1
                 table[(body, start[-4:])] = counter
 
@@ -323,11 +289,13 @@ class Recon:
         }
         rows = []
         for label, html in cases.items():
-            node = BeautifulSoup(html, "lxml").select_one(SELECTOR_CONTRACT["total_count"])
+            node = Selector(text=html).css(SELECTORS["result_count"])
             rows.append(
                 (
                     label,
-                    repr(" ".join(node.get_text().split())[:48]) if node else "(absent)",
+                    repr(" ".join(" ".join(node.css("::text").getall()).split())[:48])
+                    if node
+                    else "(absent)",
                     len(self.records(html)),
                     self.total(html),
                 )
@@ -362,7 +330,7 @@ class Recon:
         self.record("Empty-result states", body, ok=ok)
 
     def check_robots(self) -> None:
-        url = f"{self.settings.source_base_url}/robots.txt"
+        url = f"{SPEC.base_url}/robots.txt"
         self.requests_made += 1
         text = self.session.get(url, timeout=30).text
         rules = [l.strip() for l in text.splitlines() if l.lower().startswith("disallow")]
@@ -374,7 +342,7 @@ class Recon:
         time.sleep(self.settings.request_delay)
         self.requests_made += 1
         probe = self.session.head(
-            f"{self.settings.source_base_url}{capitalised}", allow_redirects=False, timeout=30
+            f"{SPEC.base_url}{capitalised}", allow_redirects=False, timeout=30
         )
         redirects_to_lower = (
             probe.status_code in (301, 308)
@@ -387,7 +355,7 @@ class Recon:
                 "",
                 *(f"- `{r}`" for r in case_rules),
                 "",
-                f"`{self.settings.source_search_path}` (the listing endpoint) is **not** disallowed.",
+                f"`{SPEC.listing.path}` (the listing endpoint) is **not** disallowed.",
                 "",
                 f"Case-sensitive match of `{doc_path}` against those rules: **{literal_hit}**.",
                 "",
@@ -566,7 +534,7 @@ def main() -> int:
         [
             "# Reconnaissance report",
             "",
-            f"Generated {date.today().isoformat()} against `{recon.settings.source_base_url}`.",
+            f"Generated {date.today().isoformat()} against `{SPEC.base_url}` ({SPEC.display_name}).",
             "",
             f"Requests issued: **{recon.requests_made}**, issued sequentially over a single "
             f"reused HTTP session, {recon.settings.request_delay}s apart. No concurrency.",

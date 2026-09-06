@@ -1,10 +1,10 @@
 # Reconnaissance report
 
-Generated 2026-09-05 against `https://www.workplacerelations.ie`.
+Generated 2026-09-05 against `https://www.workplacerelations.ie` (Workplace Relations decisions and determinations).
 
-Requests issued: **183**, issued sequentially over a single reused HTTP session, 0.6s apart. No concurrency.
+Requests issued: **43**, issued sequentially over a single reused HTTP session, 0.6s apart. No concurrency.
 
-Result: **0 failed** of 8 checks.
+Result: **0 failed** of 7 checks.
 
 Regenerate with `python scripts/recon.py --full`.
 
@@ -15,7 +15,7 @@ Regenerate with `python scripts/recon.py --full`.
 
 | field | selector | present |
 | --- | --- | --- |
-| total_count | `div.searchhead` | yes |
+| result_count | `div.searchhead` | yes |
 | record | `li.each-item` | yes |
 | identifier | `h2.title a` | yes |
 | published_date | `span.date` | yes |
@@ -23,12 +23,13 @@ Regenerate with `python scripts/recon.py --full`.
 | description | `p.description` | yes |
 | ref_no | `span.refNO` | yes |
 | view_page | `div.bottom-ref a.btn-primary` | yes |
+| next_page | `ul.pager a.next` | yes |
 
 Fields empty across 10 records: none
 `identifier` matches `ref_no` for every record: **True**
 
 The document path is published three times per record. It is resolved by precedence
-rather than by trusting one selector: `view_page` > `href` > `doc_path`.
+rather than by trusting one selector: `view_page` > `identifier` > `doc_path`.
 The footer *View Page* link wins because it is the link a user actually follows;
 `p.fullpath` is least trusted because its text node is empty and the value lives only
 in a `title` attribute, so a text-based selector silently yields an empty string.
@@ -36,7 +37,7 @@ in a `title` attribute, so a text-based selector silently yields an empty string
 | source | agrees with resolved path |
 | --- | --- |
 | `view_page` | 10/10 |
-| `href` | 10/10 |
+| `identifier` | 10/10 |
 | `doc_path` | 10/10 |
 
 Records where the three sources disagreed: **0**
@@ -46,13 +47,10 @@ Sample record:
 ```
 identifier_raw  ' ADJ-00022400'
 identifier      'ADJ-00022400'
-href            '/en/cases/2021/january/adj-00022400.html'
-doc_path        '/en/cases/2021/january/adj-00022400.html'
-view_page       '/en/cases/2021/january/adj-00022400.html'
-ref_no          'ADJ-00022400'
+extras          {'ref_no': 'ADJ-00022400'}
 description     'A Receptionist Medical Secretary / A Medical Practice'
-published_date  '31/12/2020'
-resolved_path   '/en/cases/2021/january/adj-00022400.html'
+published_date  datetime.date(2020, 12, 31)
+doc_path        '/en/cases/2021/january/adj-00022400.html'
 path_conflict   False
 ```
 
@@ -76,7 +74,7 @@ Page size is server-controlled; no request parameter overrides it.
 | `resultsPerPage` | 10 |
 | `take` | 10 |
 
-Configured `SOURCE_PAGE_SIZE` = 10.
+Configured page size = 10.
 
 Consequence: listing requests scale strictly as `ceil(records / 10)`. There is no
 lever to reduce request count other than not requesting empty ranges at all.
@@ -202,83 +200,3 @@ literal rule misses. The gap is an artefact of an IIS stack where URL routing is
 case-insensitive and robots.txt is the only case-sensitive component.
 
 See ARCHITECTURE.md for the position taken and its justification.
-
-## Corpus volume and coverage
-
-**PASS**
-
-| year | Employment Appeals Tribunal | Equality Tribunal | Labour Court | Workplace Relations Commission | total | pages |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1995 | 0 | 0 | 540 | 0 | 540 | 54 |
-| 1996 | 0 | 53 | 458 | 0 | 511 | 52 |
-| 1997 | 0 | 42 | 428 | 0 | 470 | 47 |
-| 1998 | 0 | 41 | 460 | 0 | 501 | 51 |
-| 1999 | 0 | 102 | 472 | 0 | 574 | 58 |
-| 2000 | 0 | 42 | 433 | 0 | 475 | 48 |
-| 2001 | 0 | 66 | 472 | 0 | 538 | 54 |
-| 2002 | 0 | 119 | 535 | 0 | 654 | 66 |
-| 2003 | 0 | 147 | 569 | 0 | 716 | 72 |
-| 2004 | 0 | 187 | 545 | 0 | 732 | 74 |
-| 2005 | 0 | 140 | 593 | 0 | 733 | 74 |
-| 2006 | 0 | 157 | 567 | 0 | 724 | 73 |
-| 2007 | 626 | 178 | 498 | 0 | 1302 | 131 |
-| 2008 | 1057 | 197 | 594 | 0 | 1848 | 185 |
-| 2009 | 1569 | 216 | 564 | 0 | 2349 | 235 |
-| 2010 | 2076 | 322 | 686 | 0 | 3084 | 309 |
-| 2011 | 2547 | 341 | 654 | 0 | 3542 | 355 |
-| 2012 | 2833 | 246 | 613 | 0 | 3692 | 370 |
-| 2013 | 2224 | 225 | 612 | 0 | 3061 | 307 |
-| 2014 | 1391 | 132 | 554 | 0 | 2077 | 208 |
-| 2015 | 1056 | 174 | 517 | 0 | 1747 | 175 |
-| 2016 | 869 | 34 | 580 | 1350 | 2833 | 284 |
-| 2017 | 256 | 1 | 518 | 2147 | 2922 | 293 |
-| 2018 | 11 | 0 | 492 | 2778 | 3281 | 329 |
-| 2019 | 4 | 0 | 592 | 2854 | 3450 | 345 |
-| 2020 | 3 | 8 | 338 | 1572 | 1921 | 193 |
-| 2021 | 0 | 0 | 427 | 1544 | 1971 | 198 |
-| 2022 | 1 | 0 | 472 | 1993 | 2466 | 247 |
-| 2023 | 2 | 0 | 427 | 2913 | 3342 | 335 |
-| 2024 | 1 | 0 | 508 | 2736 | 3245 | 325 |
-| 2025 | 0 | 0 | 361 | 2581 | 2942 | 295 |
-| 2026 | 1 | 0 | 277 | 1508 | 1786 | 179 |
-
-| body | value | active years | records | peak year |
-| --- | --- | --- | --- | --- |
-| Employment Appeals Tribunal | `2` | 2007–2026 | 16527 | 2012 (2833) |
-| Equality Tribunal | `1` | 1996–2020 | 3170 | 2011 (341) |
-| Labour Court | `3` | 1995–2026 | 16356 | 2010 (686) |
-| Workplace Relations Commission | `15376` | 2016–2026 | 23976 | 2023 (2913) |
-
-Corpus across 1995–2026: **60,029 records**, **6,003 listing pages** at a fixed page size of 10.
-
-### Partition sizing
-
-The busiest body-year is Workplace Relations Commission in 2023 (2,913 records). Publication is not evenly spread across that year,
-so the peak month is measured directly rather than inferred from the annual total:
-
-| month | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| records | 298 | 189 | 227 | 255 | 193 | 236 | 255 | 315 | 217 | 221 | 263 | 244 |
-
-Months sum to 2,913 against an annual count of 2,913.
-
-Each partition costs at least one listing request whether or not it holds records,
-so partition size trades blast radius against fixed overhead:
-
-| size | listing requests per year (4 bodies) | peak records per partition | peak pages | basis |
-| --- | --- | --- | --- | --- |
-| yearly | 4 | 2,913 | 292 | measured |
-| quarterly | 16 | 787 | 79 | measured (worst 3 consecutive months) |
-| monthly | 48 | 315 | 32 | measured (worst month) |
-| weekly | 208 | ~78 | ~8 | estimated from the peak month |
-
-Weekly over-partitions this corpus: the Labour Court publishes roughly ten records a
-week, so most weekly partitions would be a single page and the per-partition overhead
-would exceed the payload. Quarterly triples the blast radius of a failed partition to
-save 32 requests a year. Monthly keeps overhead small while bounding re-work on
-failure to a few minutes, and is the configured default.
-
-The dead ranges above (bodies inactive for entire years) account for 44 of 128 body-years. Skipping them
-saves more listing requests than this entire reconnaissance consumed.
-
-Year-counts that could not be parsed: none.
