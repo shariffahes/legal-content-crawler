@@ -24,6 +24,10 @@ facet:
     - id: "hc"
       name: High Court
 
+document_contract:
+  title: h1
+  content: main
+
 listing_contract:
   selectors:
     record: article.decision

@@ -46,6 +46,12 @@ facet:
       name: Workplace Relations Commission
       active_from: 2016-01-01
 
+# How to read a fetched document. The landing zone hashes the text of `content` to decide
+# whether a document changed;
+document_contract:
+  title: h1.page-title
+  content: div.content
+
 listing_contract:
   selectors:
     result_count: div.searchhead

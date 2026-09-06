@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 
@@ -94,7 +94,7 @@ class PartitionStats:
         }
 
 
-class RunStats:
+class CrawlStats:
     def __init__(self) -> None:
         self._partitions: dict[tuple[str, str], PartitionStats] = {}
         self.reasons: dict[str, int] = defaultdict(int)
@@ -141,4 +141,32 @@ class RunStats:
             "skip_reasons": dict(self.reasons),
             "incomplete_partitions": incomplete,
             "complete": not incomplete,
+        }
+
+
+@dataclass
+class TransformStats:
+    """The transformation's run summary: one flat set of counters per invocation."""
+    candidates: int = 0
+    transformed: int = 0
+    passthrough: int = 0
+    unchanged: int = 0
+    failed: int = 0
+    reasons: Counter = field(default_factory=Counter)
+    flags: Counter = field(default_factory=Counter)
+
+    @property
+    def complete(self) -> bool:
+        return self.failed == 0 and self.transformed + self.passthrough + self.unchanged == self.candidates
+
+    def summary(self) -> dict:
+        return {
+            "candidates": self.candidates,
+            "transformed": self.transformed,
+            "passthrough": self.passthrough,
+            "unchanged": self.unchanged,
+            "failed": self.failed,
+            "failure_reasons": dict(self.reasons),
+            "quality_flags": dict(self.flags),
+            "complete": self.complete,
         }

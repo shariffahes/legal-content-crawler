@@ -32,6 +32,7 @@ class DocumentRecord:
     extension: str | None = None
     file_size: int | None = None
     file_hash: str | None = None
+    file_hash_basis: str | None = None
     raw_sha256: str | None = None
     object_key: str | None = None
     fetched_at: datetime | None = None
@@ -55,5 +56,62 @@ class DocumentRecord:
         for name in ("published_date", "partition_date"):
             value = document[name]
             if isinstance(value, date):
+                document[name] = datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+        return document
+
+
+@dataclass
+class TransformedRecord:
+    """One current document in the transformed zone, derived from a landing version."""
+
+    identifier: str
+    identifier_slug: str
+    source: str
+    jurisdiction: str
+    language: str
+    issuing_authority: str | None
+    issuing_authority_id: str | None
+    description: str
+    published_date: date | datetime | None
+    doc_url: str
+    partition_key: str
+    partition_date: date | datetime
+    listing_url: str
+    extension: str
+
+    # Which landing version this came from.
+    landing_id: object
+    source_file_hash: str
+    source_file_path: str
+
+    # The transformed file.
+    file_hash: str
+    file_path: str
+    file_size: int
+
+    # What extraction found. None for passthrough formats.
+    title: str | None = None
+    text_chars: int | None = None
+    extracted_with: str | None = None
+
+    source_metadata: dict = field(default_factory=dict)
+    quality_flags: list[str] = field(default_factory=list)
+    transformed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    def carried_fields(cls) -> tuple[str, ...]:
+        """Landing fields copied verbatim; everything else is set by the transformation."""
+        return (
+            "identifier", "identifier_slug", "source", "jurisdiction", "language",
+            "issuing_authority", "issuing_authority_id", "description", "published_date",
+            "doc_url", "partition_key", "partition_date", "listing_url", "extension",
+            "source_metadata",
+        )
+
+    def to_document(self) -> dict:
+        document = asdict(self)
+        for name in ("published_date", "partition_date"):
+            value = document[name]
+            if isinstance(value, date) and not isinstance(value, datetime):
                 document[name] = datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
         return document

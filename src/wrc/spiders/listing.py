@@ -7,13 +7,13 @@ from urllib.parse import quote, urlencode
 import scrapy
 
 from wrc.config import get_settings
-from wrc.documents import content_hash, extension_for, object_key, raw_hash, slugify_identifier
+from wrc.documents import content_fingerprint, extension_for, object_key, raw_hash, slugify_identifier
 from wrc.items import DocumentRecord
 from wrc.logging import configure
 from wrc.parsing import extract_rows
 from wrc.partitions import Partition, PartitionSize, iter_partitions
 from wrc.source import FacetValue, SourceSpec
-from wrc.stats import RunStats
+from wrc.stats import CrawlStats
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class ListingSpider(scrapy.Spider):
         self.end_date = date.fromisoformat(end_date)
         self.partition_size = PartitionSize(partition_size or config.partition_size)
         self.max_recovery_pages = config.max_recovery_pages
-        self.run_stats = RunStats()
+        self.run_stats = CrawlStats()
 
         selected = {f.strip() for f in facets.split(",")} if facets else None
         self.facet_values = [
@@ -302,7 +302,15 @@ class ListingSpider(scrapy.Spider):
         record.content_type = header or None
         record.extension = extension
         record.file_size = len(body)
-        record.file_hash = content_hash(body)
+        record.file_hash, record.file_hash_basis = content_fingerprint(
+            body, extension, self.spec.document
+        )
+        if record.file_hash_basis == "document_minus_comments":
+            record.quality_flags.append("content_region_missing")
+            logger.warning(
+                "content_region_missing",
+                extra={"identifier": record.identifier, "url": response.url, "selector": self.spec.document.content},
+            )
         record.raw_sha256 = raw_hash(body)
         record.object_key = object_key(
             record.source,

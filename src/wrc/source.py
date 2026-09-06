@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 
 import yaml
 
+from wrc.documents import DocumentContract
 from wrc.pagination import Pagination, PaginationStrategy, strategy_for
 from wrc.parsing import ListingContract
 from wrc.partitions import Partition
@@ -63,6 +64,7 @@ class SourceSpec:
     facet: Facet
     pagination: PaginationStrategy
     contract: ListingContract
+    document: DocumentContract
 
     @classmethod
     def load(cls, path: str | Path) -> SourceSpec:
@@ -103,6 +105,7 @@ class SourceSpec:
             pagination=pagination,
             # The strategy says what the contract must declare for it to work.
             contract=ListingContract.from_config(raw["listing_contract"], pagination),
+            document=DocumentContract.from_config(raw.get("document_contract")),
         )
 
     @property

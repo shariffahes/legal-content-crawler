@@ -2,9 +2,29 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from parsel import Selector
+
 HTML_COMMENT = re.compile(rb"<!--.*?-->", re.S)
+HTML_EXTENSIONS = frozenset({"html"})
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentContract:
+    """Where a fetched document keeps its title and its substantive content."""
+
+    content: str
+    title: str | None = None
+
+    @classmethod
+    def from_config(cls, raw: dict | None) -> DocumentContract:
+        raw = raw or {}
+        content = (raw.get("content") or "").strip()
+        if not content:
+            raise ValueError("document_contract.content is required")
+        return cls(content=content, title=(raw.get("title") or "").strip() or None)
 
 # Extension by media type. Sources lie in URLs more often than in headers, so the
 # header is consulted first and the URL only as a fallback.
@@ -24,9 +44,36 @@ SLUG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 SLUG_REPEATS = re.compile(r"-{2,}")
 
 
-def content_hash(body: bytes) -> str:
-    """sha256 of the document with HTML comments removed. Stable across fetches."""
-    return hashlib.sha256(HTML_COMMENT.sub(b"", body)).hexdigest()
+# Text nodes below an element, skipping anything inside script or style. Matches what
+# the transformation keeps, so the fingerprint and the extracted file agree on the words.
+VISIBLE_TEXT = ".//text()[not(ancestor::script) and not(ancestor::style)]"
+
+
+def region_text(html: bytes, selector: str) -> str | None:
+    """Whitespace-normalised visible text of the first element matching selector, or None."""
+    node = Selector(text=html.decode("utf-8", "replace")).css(selector)
+    if not node:
+        return None
+    return " ".join(" ".join(node[0].xpath(VISIBLE_TEXT).getall()).split())
+
+
+def content_fingerprint(body: bytes, extension: str, contract: DocumentContract) -> tuple[str, str]:
+    """(sha256, basis) used to decide whether a document changed.
+
+    HTML is fingerprinted by the text of its title and content regions, so neither the
+    source's per-response timing comment nor a site-wide change to page chrome registers
+    as a change to every document. If the content region is absent the whole document
+    minus comments is used and the basis says so, so the caller can flag it. Anything
+    that is not HTML has no region and is fingerprinted as received.
+    """
+    if extension not in HTML_EXTENSIONS:
+        return hashlib.sha256(body).hexdigest(), "raw_bytes"
+    content = region_text(body, contract.content)
+    if content:
+        title = region_text(body, contract.title) if contract.title else None
+        joined = f"{title}\n{content}" if title else content
+        return hashlib.sha256(joined.encode("utf-8")).hexdigest(), "content_text"
+    return hashlib.sha256(HTML_COMMENT.sub(b"", body)).hexdigest(), "document_minus_comments"
 
 
 def raw_hash(body: bytes) -> str:

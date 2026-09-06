@@ -208,10 +208,11 @@ def test_listed_records_become_document_requests(spider_factory):
 def test_parse_document_fingerprints_and_names_the_record(spider_factory):
     spider = spider_factory("config/sources/wrc.yml")
     (record,), _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", [" IR - SC \u2013 00001494"]), page=1)
-    body = b"<html><!-- Elapsed time: 0.1 --><body>decision</body></html>"
+    body = b"<html><!-- Elapsed time: 0.1 --><body><div class='content'>decision</div></body></html>"
     out = fetched(spider, record, body, "text/html; charset=utf-8")
 
     assert out.identifier_slug == "IR-SC-00001494"
+    assert out.file_hash_basis == "content_text"
     assert out.extension == "html"
     assert out.file_size == len(body)
     assert out.file_hash != out.raw_sha256
@@ -227,10 +228,19 @@ def test_parse_document_fingerprints_and_names_the_record(spider_factory):
 def test_same_content_different_timing_comment_yields_same_hash_and_key(spider_factory):
     spider = spider_factory("config/sources/wrc.yml")
     (record,), _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", ["A"]), page=1)
-    first = fetched(spider, record, b"<!-- Elapsed time: 0.1 --><p>x</p>", "text/html")
+    first = fetched(spider, record, b"<!-- Elapsed time: 0.1 --><nav>a</nav><div class='content'><p>x</p></div>", "text/html")
     key_1, hash_1 = first.object_key, first.file_hash
-    second = fetched(spider, record, b"<!-- Elapsed time: 0.2 --><p>x</p>", "text/html")
+    second = fetched(spider, record, b"<!-- Elapsed time: 0.2 --><nav>b</nav><div class='content'><p>x</p></div>", "text/html")
     assert (second.object_key, second.file_hash) == (key_1, hash_1)
+
+
+def test_missing_content_region_is_flagged_not_fatal(spider_factory):
+    spider = spider_factory("config/sources/wrc.yml")
+    (record,), _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", ["A"]), page=1)
+    out = fetched(spider, record, b"<html><body><p>redesigned page</p></body></html>", "text/html")
+    assert out.file_hash_basis == "document_minus_comments"
+    assert "content_region_missing" in out.quality_flags
+    assert out.file_hash is not None
 
 
 def test_unknown_content_type_keeps_bytes_and_flags_the_record(spider_factory):

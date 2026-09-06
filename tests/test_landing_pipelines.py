@@ -9,9 +9,9 @@ from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
 from wrc.config import get_settings
-from wrc.documents import content_hash, object_key, raw_hash, slugify_identifier
-from wrc.items import DocumentRecord
-from wrc.stats import RunStats
+from wrc.documents import DocumentContract, content_fingerprint, object_key, raw_hash, slugify_identifier
+from wrc.items import DocumentRecord, TransformedRecord
+from wrc.stats import CrawlStats
 
 TEST_COLLECTION = "_test_landing"
 TEST_SOURCE = "fixture-test"
@@ -30,6 +30,22 @@ def test_to_document_drops_bytes_and_widens_dates():
     assert document["published_date"] == datetime(2024, 2, 20, tzinfo=timezone.utc)
     assert document["partition_date"] == datetime(2024, 2, 1, tzinfo=timezone.utc)
     assert document["identifier"] == "X"
+
+
+def test_transformed_record_declares_its_schema_and_encodes_dates():
+    record = TransformedRecord(
+        identifier="X", identifier_slug="X", source="s", jurisdiction="XX", language="en",
+        issuing_authority="A", issuing_authority_id="1", description="d",
+        published_date=date(2024, 2, 20), doc_url="https://h/x.html", partition_key="2024-02",
+        partition_date=date(2024, 2, 1), listing_url="https://h/l", extension="html",
+        landing_id="abc", source_file_hash="src", source_file_path="s3://landing/k",
+        file_hash="out", file_path="s3://transformed/s/X.html", file_size=10,
+        title="T", text_chars=5, extracted_with="content",
+    )
+    document = record.to_document()
+    assert document["partition_date"] == datetime(2024, 2, 1, tzinfo=timezone.utc)
+    assert document["source_file_hash"] == "src" and document["file_hash"] == "out"
+    assert set(TransformedRecord.carried_fields()) <= set(document)
 
 
 @pytest.fixture
@@ -55,7 +71,7 @@ def stack(monkeypatch):
 
 def fetched_record(body: bytes, identifier: str = "IR - SC – 1") -> DocumentRecord:
     slug = slugify_identifier(identifier)
-    digest = content_hash(body)
+    digest, _ = content_fingerprint(body, "html", DocumentContract(content="div.content"))
     return DocumentRecord(
         identifier=identifier, source=TEST_SOURCE, jurisdiction="XX", language="en",
         issuing_authority="Fixture Court", issuing_authority_id="fc", description="d",
@@ -72,7 +88,7 @@ def run_pipelines(record):
     from wrc.pipelines.mongo_landing import MongoLandingPipeline
     from wrc.pipelines.object_store import ObjectStorePipeline
 
-    spider = SimpleNamespace(run_stats=RunStats())
+    spider = SimpleNamespace(run_stats=CrawlStats())
     objects, mongo = ObjectStorePipeline(), MongoLandingPipeline()
     objects.open_spider(spider)
     mongo.open_spider(spider)
@@ -86,13 +102,13 @@ def run_pipelines(record):
 
 
 def test_first_write_stores_and_rerun_is_unchanged(stack):
-    body = b"<html><!-- Elapsed time: 0.1 --><body>decision</body></html>"
+    body = b"<html><!-- Elapsed time: 0.1 --><body><div class='content'>decision</div></body></html>"
     record, stats, objects, mongo = run_pipelines(fetched_record(body))
     assert record.file_path == f"s3://{stack.s3_landing_bucket}/{record.object_key}"
     assert record.stored_at is not None
     assert (stats.stored, stats.unchanged) == (1, 0)
 
-    same_content_new_comment = b"<html><!-- Elapsed time: 0.9 --><body>decision</body></html>"
+    same_content_new_comment = b"<html><!-- Elapsed time: 0.9 --><body><div class='content'>decision</div></body></html>"
     record2, stats2, _, _ = run_pipelines(fetched_record(same_content_new_comment))
     assert record2.object_key == record.object_key
     assert (stats2.stored, stats2.unchanged) == (0, 1)
@@ -103,8 +119,8 @@ def test_first_write_stores_and_rerun_is_unchanged(stack):
 
 
 def test_changed_content_is_a_new_row_and_a_new_object(stack):
-    run_pipelines(fetched_record(b"<body>version one</body>"))
-    record, stats, objects, mongo = run_pipelines(fetched_record(b"<body>version two</body>"))
+    run_pipelines(fetched_record(b"<div class='content'>version one</div>"))
+    record, stats, objects, mongo = run_pipelines(fetched_record(b"<div class='content'>version two</div>"))
     assert stats.stored == 1
     rows = list(mongo.collection.find({"source": TEST_SOURCE}).sort("scraped_at", 1))
     assert len(rows) == 2 and rows[0]["file_hash"] != rows[1]["file_hash"]
