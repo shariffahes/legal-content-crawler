@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from urllib.parse import quote, urlencode
 
 import scrapy
 
 from wrc.config import get_settings
+from wrc.documents import content_hash, extension_for, object_key, raw_hash, slugify_identifier
 from wrc.items import DocumentRecord
 from wrc.logging import configure
 from wrc.parsing import extract_rows
@@ -254,7 +255,7 @@ class ListingSpider(scrapy.Spider):
 
             new += 1
             stats.scraped += 1
-            yield DocumentRecord(
+            record = DocumentRecord(
                 identifier=row.identifier,
                 source=self.spec.name,
                 jurisdiction=self.spec.jurisdiction,
@@ -270,7 +271,72 @@ class ListingSpider(scrapy.Spider):
                 source_metadata={k: v for k, v in row.extras.items() if v},
                 quality_flags=flags,
             )
+            yield scrapy.Request(
+                record.doc_url,
+                callback=self.parse_document,
+                errback=self.handle_document_failure,
+                cb_kwargs={"record": record},
+            )
         return new
+
+    def parse_document(self, response, record: DocumentRecord):
+        """Fingerprint a fetched document and pass it on for storage.
+
+        The stored bytes are exactly what arrived. The content hash is computed over the
+        response minus HTML comments.
+        """
+        stats = self.run_stats.partition(
+            record.issuing_authority_id, record.issuing_authority, record.partition_key
+        )
+        body = response.body
+        header = response.headers.get("Content-Type", b"").decode("latin-1")
+        extension, recognised = extension_for(header, response.url)
+        if not recognised:
+            record.quality_flags.append("unknown_content_type")
+            logger.warning(
+                "document_type_unrecognised",
+                extra={"identifier": record.identifier, "url": response.url, "content_type": header},
+            )
+
+        record.identifier_slug = slugify_identifier(record.identifier)
+        record.content_type = header or None
+        record.extension = extension
+        record.file_size = len(body)
+        record.file_hash = content_hash(body)
+        record.raw_sha256 = raw_hash(body)
+        record.object_key = object_key(
+            record.source,
+            record.issuing_authority_id,
+            record.partition_key,
+            record.identifier_slug,
+            record.file_hash,
+            extension,
+        )
+        record.fetched_at = datetime.now(timezone.utc)
+        record.content = body
+
+        stats.downloaded += 1
+        yield record
+
+    def handle_document_failure(self, failure):
+        request = failure.request
+        record: DocumentRecord = request.cb_kwargs["record"]
+        response = getattr(failure.value, "response", None)
+        stats = self.run_stats.partition(
+            record.issuing_authority_id, record.issuing_authority, record.partition_key
+        )
+        stats.download_failed += 1
+        detail = {
+            "url": request.url,
+            "identifier": record.identifier,
+            "status": getattr(response, "status", None),
+            "error": failure.type.__name__,
+        }
+        stats.failures.append({**detail, "reason": "download_failed"})
+        logger.error(
+            "download_failed",
+            extra={"facet_value": record.issuing_authority, "partition": record.partition_key, **detail},
+        )
 
     def handle_failure(self, failure):
         request = failure.request

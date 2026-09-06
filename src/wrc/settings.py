@@ -1,4 +1,5 @@
 from wrc.config import get_settings
+from wrc.items import DocumentRecord
 
 _settings = get_settings()
 
@@ -34,3 +35,4 @@ TELNETCONSOLE_ENABLED = False
 REQUEST_FINGERPRINTER_IMPLEMENTATION = "2.7"
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 FEED_EXPORT_ENCODING = "utf-8"
+FEED_EXPORT_FIELDS = DocumentRecord.persisted_fields()

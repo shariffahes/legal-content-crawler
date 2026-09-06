@@ -16,6 +16,8 @@ class PartitionStats:
     skipped: int = 0
     degraded: int = 0
     duplicates: int = 0
+    downloaded: int = 0
+    download_failed: int = 0
     failures: list[dict] = field(default_factory=list)
     identifiers: set[str] = field(default_factory=set)
     urls_fetched: set[str] = field(default_factory=set)
@@ -42,10 +44,15 @@ class PartitionStats:
         return self.declared is not None
 
     @property
-    def complete(self) -> bool:
+    def listing_complete(self) -> bool:
         if self.failures or self.pages_parsed == 0:
             return False
         return not self.found_is_declared or self.scraped + self.skipped == self.declared
+
+    @property
+    def complete(self) -> bool:
+        """Every listed record was also fetched. Storage adds its own condition later."""
+        return self.listing_complete and self.download_failed == 0 and self.downloaded == self.scraped
 
     @property
     def missing(self) -> int | None:
@@ -65,6 +72,8 @@ class PartitionStats:
             "records_degraded": self.degraded,
             "records_duplicate": self.duplicates,
             "records_unaccounted": self.missing,
+            "documents_downloaded": self.downloaded,
+            "downloads_failed": self.download_failed,
             "pages_expected": self.pages_expected,
             "pages_parsed": self.pages_parsed,
             "failures": len(self.failures),
@@ -96,6 +105,8 @@ class RunStats:
         skipped = sum(p.skipped for p in self.partitions)
         duplicates = sum(p.duplicates for p in self.partitions)
         degraded = sum(p.degraded for p in self.partitions)
+        downloaded = sum(p.downloaded for p in self.partitions)
+        download_failed = sum(p.download_failed for p in self.partitions)
         incomplete = [p.as_dict() for p in self.partitions if not p.complete]
         return {
             "partitions_processed": len(self.partitions),
@@ -104,6 +115,8 @@ class RunStats:
             "records_skipped": skipped,
             "records_degraded": degraded,
             "records_duplicate": duplicates,
+            "documents_downloaded": downloaded,
+            "downloads_failed": download_failed,
             "records_unaccounted": found - scraped - skipped,
             "found_is_declared": all(p.found_is_declared for p in self.partitions),
             "skip_reasons": dict(self.reasons),

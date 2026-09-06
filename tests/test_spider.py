@@ -70,9 +70,10 @@ def respond(spider, url, html, page, recovery_depth=0, partition=None):
     request = Request(url, cb_kwargs=context)
     response = HtmlResponse(url, body=html.encode(), encoding="utf-8", request=request)
     outputs = list(spider.parse_listing(response, **context))
-    records = [o for o in outputs if isinstance(o, DocumentRecord)]
-    requests = [o for o in outputs if isinstance(o, Request)]
-    return records, requests
+    document_requests = [o for o in outputs if isinstance(o, Request) and o.callback == spider.parse_document]
+    listing_requests = [o for o in outputs if isinstance(o, Request) and o.callback == spider.parse_listing]
+    records = [r.cb_kwargs["record"] for r in document_requests]
+    return records, listing_requests
 
 
 def partition_stats(spider):
@@ -137,7 +138,7 @@ def test_follow_next_advances_and_stops_when_the_pager_ends(spider_factory):
     assert [r.identifier for r in records] == ["HC-3"]
     assert requests == []
     stats = partition_stats(spider)
-    assert stats.complete and stats.found == 3 and not stats.found_is_declared
+    assert stats.listing_complete and stats.found == 3 and not stats.found_is_declared
 
 
 def test_follow_next_self_referential_pager_terminates(spider_factory):
@@ -182,4 +183,85 @@ def test_missing_identifier_is_fatal_but_a_bad_date_is_not(spider_factory):
     assert records[0].quality_flags == ["missing:published_date"]
     stats = partition_stats(spider)
     assert (stats.scraped, stats.degraded, stats.skipped) == (1, 1, 1)
-    assert stats.complete
+    assert stats.listing_complete
+
+
+# ---- documents -----------------------------------------------------------------
+
+
+def fetched(spider, record, body: bytes, content_type: str, url: str | None = None):
+    url = url or record.doc_url
+    request = Request(url, cb_kwargs={"record": record})
+    response = HtmlResponse(url, body=body, request=request, headers={"Content-Type": content_type})
+    (out,) = spider.parse_document(response, record)
+    return out
+
+
+def test_listed_records_become_document_requests(spider_factory):
+    spider = spider_factory("config/sources/wrc.yml")
+    records, _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", ["LCR22912"]), page=1)
+    assert [r.doc_url for r in records] == ["https://www.workplacerelations.ie/en/cases/LCR22912.html"]
+    assert records[0].file_hash is None
+    assert not partition_stats(spider).complete
+
+
+def test_parse_document_fingerprints_and_names_the_record(spider_factory):
+    spider = spider_factory("config/sources/wrc.yml")
+    (record,), _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", [" IR - SC \u2013 00001494"]), page=1)
+    body = b"<html><!-- Elapsed time: 0.1 --><body>decision</body></html>"
+    out = fetched(spider, record, body, "text/html; charset=utf-8")
+
+    assert out.identifier_slug == "IR-SC-00001494"
+    assert out.extension == "html"
+    assert out.file_size == len(body)
+    assert out.file_hash != out.raw_sha256
+    assert out.object_key == f"wrc/{out.issuing_authority_id}/2024-01/IR-SC-00001494/{out.file_hash}.html"
+    assert out.content == body
+    assert out.fetched_at is not None
+    assert out.quality_flags == []
+    stats = partition_stats(spider)
+    assert (stats.scraped, stats.downloaded) == (1, 1) and stats.complete
+
+
+def test_same_content_different_timing_comment_yields_same_hash_and_key(spider_factory):
+    spider = spider_factory("config/sources/wrc.yml")
+    (record,), _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", ["A"]), page=1)
+    first = fetched(spider, record, b"<!-- Elapsed time: 0.1 --><p>x</p>", "text/html")
+    key_1, hash_1 = first.object_key, first.file_hash
+    second = fetched(spider, record, b"<!-- Elapsed time: 0.2 --><p>x</p>", "text/html")
+    assert (second.object_key, second.file_hash) == (key_1, hash_1)
+
+
+def test_unknown_content_type_keeps_bytes_and_flags_the_record(spider_factory):
+    spider = spider_factory("config/sources/wrc.yml")
+    (record,), _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", ["A"]), page=1)
+    out = fetched(spider, record, b"\x00\x01", "application/octet-stream", url="https://h/blob")
+    assert out.extension == "bin"
+    assert out.quality_flags == ["unknown_content_type"]
+    assert out.object_key.endswith(".bin")
+
+
+def test_pdf_by_header_regardless_of_url(spider_factory):
+    spider = spider_factory("config/sources/wrc.yml")
+    (record,), _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", ["A"]), page=1)
+    out = fetched(spider, record, b"%PDF-1.4", "application/pdf", url="https://h/looks-like.html")
+    assert out.extension == "pdf"
+
+
+def test_failed_download_is_counted_and_partition_is_incomplete(spider_factory):
+    from scrapy.spidermiddlewares.httperror import HttpError
+    from twisted.python.failure import Failure
+
+    spider = spider_factory("config/sources/wrc.yml")
+    (record,), _ = respond(spider, f"{WRC_URL}?pageNumber=1", wrc_html("Shows 1 to 1 of 1 results", ["A"]), page=1)
+    request = Request(record.doc_url, cb_kwargs={"record": record})
+    response = HtmlResponse(record.doc_url, status=503, body=b"", request=request)
+    failure = Failure(HttpError(response))
+    failure.request = request
+    spider.handle_document_failure(failure)
+
+    stats = partition_stats(spider)
+    assert stats.download_failed == 1 and stats.downloaded == 0
+    assert not stats.complete
+    assert stats.failures[-1]["reason"] == "download_failed"
+    assert stats.failures[-1]["status"] == 503
