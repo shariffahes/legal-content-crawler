@@ -22,16 +22,31 @@ class PartitionStats:
     unchanged: int = 0
     store_failed: int = 0
     failures: list[dict] = field(default_factory=list)
-    identifiers: set[str] = field(default_factory=set)
+    documents: set[str] = field(default_factory=set)
+    identifier_urls: dict[str, set[str]] = field(default_factory=dict)
+    identifiers_reused: int = 0
     urls_fetched: set[str] = field(default_factory=set)
 
-    def first_sighting(self, identifier: str) -> bool:
-        """Record an identifier; False if this partition already produced it."""
-        if identifier in self.identifiers:
+    def first_sighting(self, doc_url: str) -> bool:
+        """Record a document by its URL; False if this partition already produced it.
+
+        The URL is the identity, not the identifier: the source has published two
+        different decisions under one identifier, and those are two documents.
+        """
+        if doc_url in self.documents:
             self.duplicates += 1
             return False
-        self.identifiers.add(identifier)
+        self.documents.add(doc_url)
         return True
+
+    def note_identifier(self, identifier: str, doc_url: str) -> set[str]:
+        """Track which URLs an identifier has appeared with; the other URLs, if any."""
+        urls = self.identifier_urls.setdefault(identifier, set())
+        is_new = doc_url not in urls
+        urls.add(doc_url)
+        if is_new and len(urls) > 1:
+            self.identifiers_reused += 1
+        return urls - {doc_url}
 
     @property
     def found(self) -> int:
@@ -81,6 +96,7 @@ class PartitionStats:
             "records_skipped": self.skipped,
             "records_degraded": self.degraded,
             "records_duplicate": self.duplicates,
+            "identifiers_reused": self.identifiers_reused,
             "records_unaccounted": self.missing,
             "documents_downloaded": self.downloaded,
             "downloads_failed": self.download_failed,
@@ -118,6 +134,7 @@ class CrawlStats:
         skipped = sum(p.skipped for p in self.partitions)
         duplicates = sum(p.duplicates for p in self.partitions)
         degraded = sum(p.degraded for p in self.partitions)
+        reused = sum(p.identifiers_reused for p in self.partitions)
         downloaded = sum(p.downloaded for p in self.partitions)
         download_failed = sum(p.download_failed for p in self.partitions)
         stored = sum(p.stored for p in self.partitions)
@@ -131,6 +148,7 @@ class CrawlStats:
             "records_skipped": skipped,
             "records_degraded": degraded,
             "records_duplicate": duplicates,
+            "identifiers_reused": reused,
             "documents_downloaded": downloaded,
             "downloads_failed": download_failed,
             "documents_stored": stored,

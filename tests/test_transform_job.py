@@ -38,7 +38,7 @@ def stack():
             s3.delete_object(Bucket=bucket, Key=o["Key"])
 
 
-def seed(settings, identifier: str, body: bytes, extension="html", content_type="text/html; charset=utf-8", scraped_at=None):
+def seed(settings, identifier: str, body: bytes, extension="html", content_type="text/html; charset=utf-8", scraped_at=None, doc_url="https://x/d.html"):
     """Write one landing row + object the way the pipelines would."""
     slug = slugify_identifier(identifier)
     digest, basis = content_fingerprint(body, extension, DocumentContract(content="div.content", title="h1.page-title"))
@@ -49,7 +49,7 @@ def seed(settings, identifier: str, body: bytes, extension="html", content_type=
     row = {
         "identifier": identifier, "identifier_slug": slug, "source": SOURCE, "jurisdiction": "XX", "language": "en",
         "issuing_authority": "Labour Court", "issuing_authority_id": "3", "description": "d",
-        "published_date": datetime(2024, 1, 20, tzinfo=timezone.utc), "doc_url": "https://x/d.html",
+        "published_date": datetime(2024, 1, 20, tzinfo=timezone.utc), "doc_url": doc_url,
         "partition_key": "2024-01", "partition_date": datetime(2024, 1, 1, tzinfo=timezone.utc), "listing_url": "https://x/l",
         "scraped_at": scraped_at or datetime.now(timezone.utc), "source_metadata": {}, "quality_flags": [],
         "content_type": content_type, "extension": extension, "file_size": len(body),
@@ -114,3 +114,52 @@ def test_pdf_passes_through_byte_for_byte(stack):
     assert s3.get_object(Bucket=settings.s3_transformed_bucket, Key=f"{SOURCE}/P1.pdf")["Body"].read() == pdf
     row = MongoClient(settings.mongo_uri.get_secret_value())[settings.mongo_db][TRANSFORMED].find_one({"identifier": "P1"})
     assert row["file_hash"] == hashlib.sha256(pdf).hexdigest() == row["source_file_hash"]
+
+
+def test_reused_identifier_yields_two_documents_with_deterministic_names(stack):
+    """Two decisions published as RPD241: two rows, two files, neither named RPD241.html."""
+    settings, spec = stack
+    seed(settings, "RPD241", HTML.replace(b"decision", b"july decision"), doc_url="https://x/2024/july/rpd241.html")
+    seed(settings, "RPD241", HTML.replace(b"decision", b"february decision"), doc_url="https://x/2024/february/rpd241.html")
+    seed(settings, "LCR1", HTML, doc_url="https://x/lcr1.html")
+    summary = job(settings, spec).run()
+    assert summary["transformed"] == 3 and summary["complete"]
+    assert summary["quality_flags"] == {"identifier_reused": 2}
+    for r in MongoClient(settings.mongo_uri.get_secret_value())[settings.mongo_db][TRANSFORMED].find({"identifier": "RPD241"}):
+        assert r["quality_flags"] == ["identifier_reused"], "flag once, even when landing already carried it"
+
+    db = MongoClient(settings.mongo_uri.get_secret_value())[settings.mongo_db]
+    rows = list(db[TRANSFORMED].find({"source": SOURCE, "identifier": "RPD241"}))
+    assert len(rows) == 2
+    names = sorted(r["file_path"].rsplit("/", 1)[-1] for r in rows)
+    assert all(n.startswith("RPD241~") and n.endswith(".html") and len(n) == len("RPD241~xxxxxxxx.html") for n in names)
+    assert names[0] != names[1]
+    assert db[TRANSFORMED].find_one({"identifier": "LCR1"})["file_path"].endswith("/LCR1.html"), "unique identifiers keep the spec's name"
+
+    again = job(settings, spec).run()
+    assert (again["unchanged"], again["transformed"]) == (3, 0)
+
+
+def test_stale_index_is_replaced_and_a_late_reuse_renames_the_first_document(stack):
+    """The transformed zone reconciles its own schema and its own file names."""
+    settings, spec = stack
+    db = MongoClient(settings.mongo_uri.get_secret_value())[settings.mongo_db]
+    db[TRANSFORMED].create_index([("source", 1), ("identifier", 1)], unique=True, name="document_identity")
+
+    seed(settings, "RPD241", HTML, doc_url="https://x/2024/july/rpd241.html")
+    first = job(settings, spec)
+    assert [tuple(k) for k in db[TRANSFORMED].index_information()["document_identity"]["key"]] == [("source", 1), ("identifier", 1), ("doc_url", 1)]
+    first.run()
+    assert db[TRANSFORMED].find_one({"identifier": "RPD241"})["file_path"].endswith("/RPD241.html")
+
+    seed(settings, "RPD241", HTML.replace(b"decision", b"other"), doc_url="https://x/2024/february/rpd241.html")
+    summary = job(settings, spec).run()
+    assert summary["transformed"] == 2 and summary["unchanged"] == 0, "the first document is re-written under its new name"
+    paths = sorted(r["file_path"].rsplit("/", 1)[-1] for r in db[TRANSFORMED].find({"identifier": "RPD241"}))
+    assert len(paths) == 2 and all(p.startswith("RPD241~") for p in paths)
+
+    s3 = boto3.client("s3", endpoint_url=settings.s3_endpoint_url, aws_access_key_id=settings.s3_access_key,
+                      aws_secret_access_key=settings.s3_secret_key.get_secret_value(), region_name=settings.s3_region)
+    keys = {o["Key"] for o in s3.list_objects_v2(Bucket=settings.s3_transformed_bucket, Prefix=f"{SOURCE}/")["Contents"]}
+    assert f"{SOURCE}/RPD241.html" not in keys, "stale bare-named object removed"
+    assert len(keys) == 2

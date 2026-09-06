@@ -236,14 +236,26 @@ class ListingSpider(scrapy.Spider):
                     ),
                 )
 
-            if not stats.first_sighting(row.identifier):
+            doc_url = self.spec.absolute_url(row.doc_path, found_on=response.url)
+            if not stats.first_sighting(doc_url):
                 logger.warning(
                     "record_duplicate_in_run",
-                    extra=self.context(facet_value, partition, page=page, identifier=row.identifier),
+                    extra=self.context(facet_value, partition, page=page, identifier=row.identifier, doc_url=doc_url),
                 )
                 continue
 
             flags = [f"missing:{name}" for name in row.degraded]
+            other_urls = stats.note_identifier(row.identifier, doc_url)
+            if other_urls:
+                # The source has published a different document under this identifier.
+                flags.append("identifier_reused")
+                logger.warning(
+                    "identifier_reused",
+                    extra=self.context(
+                        facet_value, partition, page=page, identifier=row.identifier,
+                        doc_url=doc_url, other_urls=sorted(other_urls),
+                    ),
+                )
             if flags:
                 stats.degraded += 1
                 logger.warning(
@@ -264,7 +276,7 @@ class ListingSpider(scrapy.Spider):
                 issuing_authority_id=facet_value.id,
                 description=row.description,
                 published_date=row.published_date,
-                doc_url=self.spec.absolute_url(row.doc_path, found_on=response.url),
+                doc_url=doc_url,
                 partition_key=partition.key,
                 partition_date=partition.partition_date,
                 listing_url=response.url,

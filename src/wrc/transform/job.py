@@ -19,8 +19,23 @@ from wrc.transform.extract import extract_document
 
 logger = logging.getLogger(__name__)
 
-TRANSFORMED_KEY = [("source", ASCENDING), ("identifier", ASCENDING)]
+TRANSFORMED_KEY = [("source", ASCENDING), ("identifier", ASCENDING), ("doc_url", ASCENDING)]
 READ_KEY = [("source", ASCENDING), ("partition_date", ASCENDING)]
+
+
+def ensure_index(collection, keys, name: str, unique: bool = False) -> None:
+    """Create an index, replacing a same-named one whose key differs.
+
+    Legitimate here and only here: the transformed zone is a derived, rebuildable view,
+    so its job may reconcile its own schema. The landing pipeline deliberately does not
+    do this; a changed index on immutable data should fail loudly, not self-heal.
+    """
+    existing = collection.index_information().get(name)
+    if existing is not None and [tuple(k) for k in existing["key"]] != [tuple(k) for k in keys]:
+        logger.warning("index_replaced", extra={"collection": collection.name, "index": name,
+                                                "old_key": existing["key"], "new_key": keys})
+        collection.drop_index(name)
+    collection.create_index(keys, unique=unique, name=name)
 
 
 class TransformJob:
@@ -34,8 +49,8 @@ class TransformJob:
         db = client[settings.mongo_db]
         self.landing = db[settings.mongo_landing_collection]
         self.transformed = db[settings.mongo_transformed_collection]
-        self.transformed.create_index(TRANSFORMED_KEY, unique=True, name="document_identity")
-        self.transformed.create_index(READ_KEY, name="source_partition_date")
+        ensure_index(self.transformed, TRANSFORMED_KEY, "document_identity", unique=True)
+        ensure_index(self.transformed, READ_KEY, "source_partition_date")
 
         self.s3 = boto3.client(
             "s3",
@@ -57,17 +72,40 @@ class TransformJob:
         ]
 
     def latest_landing_records(self) -> list[dict]:
-        """One record per identifier: the most recently scraped version in the range."""
+        """One record per document: the most recently scraped version in the range.
+
+        A document is identified by its URL. The source has published different
+        decisions under one identifier, so identifier alone would merge them.
+        """
         cursor = self.landing.find(
             {"source": self.spec.name, "partition_date": {"$in": self.partition_dates()}, "file_hash": {"$ne": None}},
         ).sort("scraped_at", -1)
-        latest: dict[str, dict] = {}
+        latest: dict[tuple[str, str], dict] = {}
         for row in cursor:
-            latest.setdefault(row["identifier"], row)
+            latest.setdefault((row["identifier"], row["doc_url"]), row)
         return list(latest.values())
+
+    @staticmethod
+    def file_names(records: list[dict]) -> dict[tuple[str, str], str]:
+        """<slug>.<ext> per the spec, unless an identifier names more than one document.
+
+        Then every document sharing it gets a suffix derived from its URL, so the names
+        are deterministic whatever order the documents are processed in.
+        """
+        urls_by_identifier: dict[str, set[str]] = {}
+        for row in records:
+            urls_by_identifier.setdefault(row["identifier"], set()).add(row["doc_url"])
+        names = {}
+        for row in records:
+            stem = row["identifier_slug"]
+            if len(urls_by_identifier[row["identifier"]]) > 1:
+                stem += "~" + hashlib.sha256(row["doc_url"].encode()).hexdigest()[:8]
+            names[(row["identifier"], row["doc_url"])] = f"{stem}.{row['extension']}"
+        return names
 
     def run(self) -> dict:
         records = self.latest_landing_records()
+        self.names = self.file_names(records)
         self.stats.candidates = len(records)
         logger.info(
             "transform_planned",
@@ -93,10 +131,13 @@ class TransformJob:
 
     def process(self, row: dict) -> None:
         identifier = row["identifier"]
-        existing = self.transformed.find_one(
-            {"source": row["source"], "identifier": identifier}, {"source_file_hash": 1}
-        )
-        if existing and existing.get("source_file_hash") == row["file_hash"]:
+        identity = {"source": row["source"], "identifier": identifier, "doc_url": row["doc_url"]}
+        name = self.names[(identifier, row["doc_url"])]
+        key = f"{row['source']}/{name}"
+        file_path = f"s3://{self.settings.s3_transformed_bucket}/{key}"
+
+        existing = self.transformed.find_one(identity, {"source_file_hash": 1, "file_path": 1})
+        if existing and existing.get("source_file_hash") == row["file_hash"] and existing.get("file_path") == file_path:
             self.stats.unchanged += 1
             logger.info("document_unchanged", extra={"identifier": identifier, "file_hash": row["file_hash"]})
             return
@@ -121,7 +162,9 @@ class TransformJob:
             outcome = "document_passthrough"
             self.stats.passthrough += 1
 
-        key = f"{row['source']}/{row['identifier_slug']}.{extension}"
+        if "~" in name:
+            flags.append("identifier_reused")
+        flags = list(dict.fromkeys(flags))
         self.s3.put_object(
             Bucket=self.settings.s3_transformed_bucket, Key=key, Body=output, ContentType=content_type,
             Metadata={"source-file-hash": row["file_hash"], "landing-key": row["object_key"]},
@@ -133,14 +176,18 @@ class TransformJob:
             source_file_hash=row["file_hash"],
             source_file_path=row["file_path"],
             file_hash=hashlib.sha256(output).hexdigest(),
-            file_path=f"s3://{self.settings.s3_transformed_bucket}/{key}",
+            file_path=file_path,
             file_size=len(output),
             quality_flags=flags,
             **details,
         )
-        self.transformed.replace_one(
-            {"source": record.source, "identifier": record.identifier}, record.to_document(), upsert=True
-        )
+        self.transformed.replace_one(identity, record.to_document(), upsert=True)
+        stale = existing.get("file_path") if existing else None
+        if stale and stale != file_path:
+            # The document was renamed (an identifier turned out to be shared). The
+            # transformed zone is mutable, so the old object goes.
+            self.s3.delete_object(Bucket=self.settings.s3_transformed_bucket, Key=stale.split("/", 3)[3])
+            logger.info("document_renamed", extra={"identifier": identifier, "from": stale, "to": file_path})
         for flag in flags:
             self.stats.flags[flag] += 1
         logger.info(outcome, extra={"identifier": identifier, "file_path": record.file_path, "flags": flags, **details})

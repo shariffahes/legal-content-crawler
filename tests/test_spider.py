@@ -276,3 +276,46 @@ def test_failed_download_is_counted_and_partition_is_incomplete(spider_factory):
     assert not stats.complete
     assert stats.failures[-1]["reason"] == "download_failed"
     assert stats.failures[-1]["status"] == 503
+
+
+# ---- identity is the URL ---------------------------------------------------------
+
+
+def wrc_html_urls(total: str, rows: list[tuple[str, str]]) -> str:
+    """Rows as (identifier, path), so the same identifier can point at two documents."""
+    body = "".join(
+        f'<li class="each-item"><h2 class="title"><a href="{p}"> {i}</a></h2>'
+        f'<span class="date">15/01/2024</span><p class="fullpath" title="{p}"></p>'
+        f'<p class="description">d</p><span class="refNO"> {i}</span>'
+        f'<div class="bottom-ref"><a class="btn btn-primary" href="{p}">View</a></div></li>'
+        for i, p in rows
+    )
+    return f'<div class="searchhead">{total}</div><ul>{body}</ul>'
+
+
+def test_same_identifier_different_urls_are_two_documents(spider_factory):
+    """The source has published two decisions as RPD241. Both must be kept and flagged."""
+    spider = spider_factory("config/sources/wrc.yml")
+    html = wrc_html_urls("Shows 1 to 2 of 2 results", [
+        ("RPD241", "/en/cases/2024/july/rpd241.html"),
+        ("RPD241", "/en/cases/2024/february/rpd241.html"),
+    ])
+    records, _ = respond(spider, f"{WRC_URL}?pageNumber=1", html, page=1)
+    assert [r.doc_url.rsplit("/", 2)[1] for r in records] == ["july", "february"]
+    assert records[0].quality_flags == [] and records[1].quality_flags == ["identifier_reused"]
+    stats = partition_stats(spider)
+    assert (stats.scraped, stats.duplicates, stats.identifiers_reused) == (2, 0, 1)
+    assert stats.listing_complete
+
+
+def test_same_url_twice_is_still_one_document(spider_factory):
+    """The unstable sort puts one row on two pages: same identifier, same URL, drop it."""
+    spider = spider_factory("config/sources/wrc.yml")
+    page1 = wrc_html_urls("Shows 1 to 10 of 11 results", [("A", "/en/cases/a.html")])
+    page2 = wrc_html_urls("Shows 11 to 11 of 11 results", [("A", "/en/cases/a.html")])
+    respond(spider, f"{WRC_URL}?pageNumber=1", page1, page=1)
+    records, _ = respond(spider, f"{WRC_URL}?pageNumber=2", page2, page=2)
+    assert records == []
+    stats = partition_stats(spider)
+    assert (stats.scraped, stats.duplicates, stats.identifiers_reused) == (1, 1, 0)
+    assert not stats.listing_complete, "11 declared, 1 unique: a record was displaced"
