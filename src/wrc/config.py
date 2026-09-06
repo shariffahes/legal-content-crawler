@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     log_level: str
     max_recovery_pages: int
 
+    orchestration_start_partition: str
+
 
 @lru_cache
 def get_settings() -> Settings:
