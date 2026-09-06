@@ -1,0 +1,31 @@
+# Architecture
+
+I split the pipeline into two zones with one job each. The landing zone (a MinIO bucket and a Mongo collection) keeps every document exactly as I received it and every version of its metadata (as per spec it never updates). The transformed zone keeps one clean, current copy per document, and I can rebuild it from landing at any time. Each zone is a Dagster asset, partitioned by month, with the transform depending on landing. I measured the site before relying on anything about it; `scripts/recon.py` re-runs those measurements, so the numbers below are reproducible.
+
+## Partition size
+
+Monthly, and configurable. I did not want to guess, so the reconnaissance is a script that measures the site and writes a report: it counts the records each authority declares per year from 1995 onward and breaks the busiest year down by month. I used AI to analyse those numbers and it came back with a recommendation and three reasons, which I checked and agreed with.
+1. The site returns a fixed 10 results per page, so request count is the one thing I cannot change, and every partition costs at least one request even when empty.
+2. Size against the worst month, not the average, because the worst month is what a failed partition has to redo: August 2023 for the WRC is 315 records, 32 pages, where the average would have said 242 and understated it by 30%.
+3. The sizes either side of monthly are worse trades. Weekly is 208 requests a year per authority, most of them fetching a single page, since the Labour Court publishes about 10 records a week. Quarterly saves 32 requests a year but a failure re-fetches three months instead of one. Monthly is 48 requests a year per authority and bounds a re-run to minutes.
+
+Partitions are aligned to the calendar, not the requested range, so `2024-02` means February whatever dates I pass and a partition can be re-run by name. Each record carries the same period in two forms, a `partition_key` and a `partition_date`. The key is a label whose shape says which size produced it: `2024-01` is a month, `2024-Q1` a quarter, `2024-W01` a week. A bare date cannot say that, since `2024-01-01` is the first day of a day, a month, a quarter and a year, and the size is configurable. The date is a real date so the transform can range-query it in Mongo, which a label cannot do reliably once weekly and monthly labels sit in the same collection. Partitions before an authority existed are skipped without a request, example the WRC has nothing before 2016.
+
+## Retries and rate limiting
+
+Inside a partition I fetch pages concurrently: page one declares the total, which gives me every page number up front. Following the "next" link would be serial, and a dropped request would look exactly like the end of the results. I still read the pager, but only to check the enumeration was not short and to recover its tail under a bound. I let AutoThrottle set the delay: it adjusts from observed latency toward a target concurrency, so the crawl speeds up when the server is idle and backs off before it is blocked. I retry 429 and 5xx three times and 4xx never. The User-Agent names the project. I turned cookies off because the site is stateless. Every failed request reaches an errback and is logged with URL, status and error against its partition.
+
+The site does not order results consistently between requests, so a record can appear on two pages while another falls between them and is never fetched. I saw this in two of four identical runs. I could not fix it, only detect it: page one declares the site's own count, and I reconcile what I scraped against that instead of my own arithmetic. A partition that comes up short fails its materialisation and is re-materialised alone, which usually picks up the missing record.
+
+## Deduplication
+
+I deduplicate at three layers, and each one answers a different question.
+- Within a run, Scrapy's dupefilter stays on and a partition never emits the same document twice.
+- Across runs, the unique index on `(source, identifier, file_hash)` makes "duplicate" mean "same content": an unchanged document is refused, a changed one becomes a new row, and I never update landing.
+- The object key ends with the same hash and I check it exists before writing, so nothing is re-uploaded or overwritten.
+
+What I hash decides what "changed" means, and this took a few tries. Raw bytes were never stable: the server injects a timing comment on every fresh render, and any change to the site's navigation would have marked every document as changed. So `file_hash` is the text of the document's title and content regions, declared once in the source spec and read by both the fingerprint and the transform. Two runs of 45 documents: 45/45 identical fingerprints, 0/45 identical raw hashes. I keep the raw digest to verify the stored object.
+
+## Supporting 50+ sources
+
+The shared layer is built. What a new source costs depends on how different it is. Parser, partitioner, pipelines, transform and orchestration know nothing about any specific site. Buckets and collections are shared, with `source` leading every key prefix and every index, so identifiers only need to be unique within a source. A source that behaves like this one is a YAML file: request shape and parameter names, the facet it is partitioned by, which pagination strategy to use, listing and document selectors. A source that behaves differently is that file plus a subclass that overrides only what differs, and the seams for that already exist: pagination is a strategy class chosen by name, the document contract is what the fingerprint and the transform both read, and the spider only ever asks those two what to do next. I would not claim every site is a config change: the first differently-shaped source I described, even as a test fixture, needed a second pagination strategy before the config could express it. What is left is operational, not parsing: a registry that picks a spider by name and carries per-source rate limits and schedules, one Dagster partition dimension per source so failures stay isolated, per-source metrics and alerting, a rendering strategy for JavaScript listings, and secrets from a vault rather than an env file.
